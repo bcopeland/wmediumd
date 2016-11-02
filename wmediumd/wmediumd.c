@@ -764,7 +764,8 @@ int main(int argc, char *argv[])
 	}
 
 	INIT_LIST_HEAD(&ctx.stations);
-	load_config(&ctx, config_file);
+	if (load_config(&ctx, config_file) != EXIT_SUCCESS)
+		return EXIT_FAILURE;
 
 	/* init libevent */
 	event_init();
