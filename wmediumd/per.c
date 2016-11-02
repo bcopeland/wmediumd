@@ -112,7 +112,8 @@ double per(double ber, enum fec_rate rate, int frame_len)
 	double p_d[ARRAY_SIZE(a_d[0])] = {};
 	double rho = ber;
 	double prob_uncorrected;
-	int i, k;
+	int k;
+	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(p_d); i++) {
 		double sum_prob = 0;

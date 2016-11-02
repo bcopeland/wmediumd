@@ -7,7 +7,7 @@ NL3FOUND := $(shell $(PKG_CONFIG) --atleast-version=3 libnl-3.0 && echo Y)
 NL31FOUND := $(shell $(PKG_CONFIG) --exact-version=3.1 libnl-3.1 && echo Y)
 NL3xFOUND := $(shell $(PKG_CONFIG) --atleast-version=3.2 libnl-3.0 && echo Y)
 
-CFLAGS = -g -Wall -O2
+CFLAGS = -g -Wall -Wextra -Wno-unused-parameter -O2
 LDFLAGS = -levent -lm
 
 ifeq ($(NL2FOUND),Y)
@@ -45,7 +45,7 @@ endif
 LDFLAGS += $(shell $(PKG_CONFIG) --libs $(NLLIBNAME))
 CFLAGS += $(shell $(PKG_CONFIG) --cflags $(NLLIBNAME))
 
-CFLAGS+=-DVERSION_STR=$(VERSION_STR) -g
+CFLAGS+=-DVERSION_STR=$(VERSION_STR)
 LDFLAGS+=-lconfig 
 OBJECTS=wmediumd.o config.o per.o
 
