@@ -246,7 +246,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 	noack = frame_is_mgmt(frame) || is_multicast_ether_addr(dest);
 	double choice = -3.14;
 
-	for (i = 0; i < IEEE80211_TX_MAX_RATES && !is_acked; i++) {
+	for (i = 0; i < frame->tx_rates_count && !is_acked; i++) {
 
 		rate_idx = frame->tx_rates[i].idx;
 
@@ -287,7 +287,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 
 	if (is_acked) {
 		frame->tx_rates[i-1].count = j + 1;
-		for (; i < IEEE80211_TX_MAX_RATES; i++) {
+		for (; i < frame->tx_rates_count; i++) {
 			frame->tx_rates[i].idx = -1;
 			frame->tx_rates[i].count = -1;
 		}
@@ -318,11 +318,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 /*
  * Report transmit status to the kernel.
  */
-int send_tx_info_frame_nl(struct wmediumd *ctx,
-			  struct station *src,
-			  unsigned int flags, int signal,
-			  struct hwsim_tx_rate *tx_attempts,
-			  u64 cookie)
+static int send_tx_info_frame_nl(struct wmediumd *ctx, struct frame *frame)
 {
 	struct nl_sock *sock = ctx->sock;
 	struct nl_msg *msg;
@@ -344,13 +340,13 @@ int send_tx_info_frame_nl(struct wmediumd *ctx,
 	}
 
 	if (nla_put(msg, HWSIM_ATTR_ADDR_TRANSMITTER, ETH_ALEN,
-		    src->hwaddr) ||
-	    nla_put_u32(msg, HWSIM_ATTR_FLAGS, flags) ||
-	    nla_put_u32(msg, HWSIM_ATTR_SIGNAL, signal) ||
+		    frame->sender->hwaddr) ||
+	    nla_put_u32(msg, HWSIM_ATTR_FLAGS, frame->flags) ||
+	    nla_put_u32(msg, HWSIM_ATTR_SIGNAL, frame->signal) ||
 	    nla_put(msg, HWSIM_ATTR_TX_INFO,
-		    IEEE80211_TX_MAX_RATES * sizeof(struct hwsim_tx_rate),
-		    tx_attempts) ||
-	    nla_put_u64(msg, HWSIM_ATTR_COOKIE, cookie)) {
+		    frame->tx_rates_count * sizeof(struct hwsim_tx_rate),
+		    frame->tx_rates) ||
+	    nla_put_u64(msg, HWSIM_ATTR_COOKIE, frame->cookie)) {
 		printf("%s: Failed to fill a payload\n", __func__);
 		ret = -1;
 		goto out;
@@ -468,8 +464,7 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 		}
 	}
 
-	send_tx_info_frame_nl(ctx, frame->sender, frame->flags,
-			      frame->signal, frame->tx_rates, frame->cookie);
+	send_tx_info_frame_nl(ctx, frame);
 
 	free(frame);
 }
