@@ -42,6 +42,42 @@ static void string_to_mac_address(const char *str, u8 *addr)
 	addr[5] = (u8) a[5];
 }
 
+static int get_link_snr_default(struct wmediumd *ctx, struct station *sender,
+				 struct station *receiver)
+{
+	return SNR_DEFAULT;
+}
+
+static int get_link_snr_from_snr_matrix(struct wmediumd *ctx,
+					struct station *sender,
+					struct station *receiver)
+{
+	return ctx->snr_matrix[sender->index * ctx->num_stas + receiver->index];
+}
+
+static double _get_error_prob_from_snr(struct wmediumd *ctx, double snr,
+				       unsigned int rate_idx, int frame_len,
+				       struct station *src, struct station *dst)
+{
+	return get_error_prob_from_snr(snr, rate_idx, frame_len);
+}
+
+static double get_error_prob_from_matrix(struct wmediumd *ctx, double snr,
+					 unsigned int rate_idx, int frame_len,
+					 struct station *src,
+					 struct station *dst)
+{
+	if (dst == NULL) // dst is multicast. returned value will not be used.
+		return 0.0;
+
+	return ctx->error_prob_matrix[ctx->num_stas * src->index + dst->index];
+}
+
+int use_fixed_random_value(struct wmediumd *ctx)
+{
+	return ctx->error_prob_matrix != NULL;
+}
+
 /*
  *	Loads a config file into memory
  */
@@ -50,7 +86,9 @@ int load_config(struct wmediumd *ctx, const char *file)
 	config_t cfg, *cf;
 	const config_setting_t *ids;
 	const config_setting_t *links;
+	const config_setting_t *error_probs, *error_prob;
 	int count_ids, i;
+	int start, end, snr;
 	struct station *station;
 
 	/*initialize the config file*/
@@ -97,10 +135,21 @@ int load_config(struct wmediumd *ctx, const char *file)
 	}
 	ctx->num_stas = count_ids;
 
+	links = config_lookup(cf, "ifaces.links");
+	error_probs = config_lookup(cf, "ifaces.error_probs");
+
+	if (links && error_probs) {
+		fprintf(stderr, "specify one of links/error_probs\n");
+		goto fail;
+	}
+
+	ctx->get_link_snr = get_link_snr_from_snr_matrix;
+	ctx->get_error_prob = _get_error_prob_from_snr;
+
 	/* create link quality matrix */
 	ctx->snr_matrix = calloc(sizeof(int), count_ids * count_ids);
 	if (!ctx->snr_matrix) {
-		fprintf(stderr, "Out of memory!\n");
+		fprintf(stderr, "Out of memory(snr_matrix)\n");
 		return EXIT_FAILURE;
 	}
 
@@ -108,10 +157,28 @@ int load_config(struct wmediumd *ctx, const char *file)
 	for (i = 0; i < count_ids * count_ids; i++)
 		ctx->snr_matrix[i] = SNR_DEFAULT;
 
-	links = config_lookup(cf, "ifaces.links");
+	ctx->error_prob_matrix = NULL;
+	if (error_probs) {
+		if (config_setting_length(error_probs) != count_ids) {
+			fprintf(stderr, "Specify %d error probabilities\n",
+				count_ids);
+			goto fail;
+		}
+
+		ctx->error_prob_matrix = calloc(sizeof(double),
+						count_ids * count_ids);
+		if (!ctx->error_prob_matrix) {
+			fprintf(stderr, "Out of memory(error_prob_matrix)\n");
+			goto fail;
+		}
+
+		ctx->get_link_snr = get_link_snr_default;
+		ctx->get_error_prob = get_error_prob_from_matrix;
+	}
+
+	/* read snr values */
 	for (i = 0; links && i < config_setting_length(links); i++) {
 		config_setting_t *link;
-		int start, end, snr;
 
 		link = config_setting_get_elem(links, i);
 		if (config_setting_length(link) != 3) {
@@ -132,6 +199,27 @@ int load_config(struct wmediumd *ctx, const char *file)
 		ctx->snr_matrix[ctx->num_stas * end + start] = snr;
 	}
 
+	/* read error probabilities */
+	for (start = 0; error_probs && start < count_ids; start++) {
+		error_prob = config_setting_get_elem(error_probs, start);
+		if (config_setting_length(error_prob) != count_ids) {
+			fprintf(stderr, "Specify %d error probabilities\n",
+				count_ids);
+			goto fail;
+		}
+		for (end = start + 1; end < count_ids; end++) {
+			ctx->error_prob_matrix[count_ids * start + end] =
+			ctx->error_prob_matrix[count_ids * end + start] =
+				config_setting_get_float_elem(error_prob, end);
+		}
+	}
+
 	config_destroy(cf);
 	return EXIT_SUCCESS;
+
+ fail:
+	free(ctx->snr_matrix);
+	free(ctx->error_prob_matrix);
+	config_destroy(cf);
+	return EXIT_FAILURE;
 }

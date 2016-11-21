@@ -142,7 +142,7 @@ double per(double ber, enum fec_rate rate, int frame_len)
 	return 1.0 - pow(1 - prob_uncorrected, 8 * frame_len);
 }
 
-double get_error_prob(double snr, unsigned int rate_idx, int frame_len)
+double get_error_prob_from_snr(double snr, unsigned int rate_idx, int frame_len)
 {
 	int m;
 	enum fec_rate fec;
