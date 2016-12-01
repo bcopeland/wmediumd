@@ -24,6 +24,7 @@
 #include <libconfig.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "wmediumd.h"
 
@@ -78,14 +79,144 @@ int use_fixed_random_value(struct wmediumd *ctx)
 	return ctx->error_prob_matrix != NULL;
 }
 
+#define FREQ_1CH (2.412e9)		// [Hz]
+#define SPEED_LIGHT (2.99792458e8)	// [meter/sec]
+/*
+ * Calculate path loss based on a log distance model
+ *
+ * This function returns path loss [dBm].
+ */
+static int calc_path_loss_log_distance(void *model_param,
+			  struct station *dst, struct station *src)
+{
+	struct log_distance_model_param *param;
+	double PL, PL0, d;
+
+	param = model_param;
+
+	d = sqrt((src->x - dst->x) * (src->x - dst->x) +
+		 (src->y - dst->y) * (src->y - dst->y));
+
+	/*
+	 * Calculate PL0 with Free-space path loss in decibels
+	 *
+	 * 20 * log10 * (4 * M_PI * d * f / c)
+	 *   d: distance [meter]
+	 *   f: frequency [Hz]
+	 *   c: speed of light in a vacuum [meter/second]
+	 *
+	 * https://en.wikipedia.org/wiki/Free-space_path_loss
+	 */
+	PL0 = 20.0 * log10(4.0 * M_PI * 1.0 * FREQ_1CH / SPEED_LIGHT);
+
+	/*
+	 * Calculate signal strength with Log-distance path loss model
+	 * https://en.wikipedia.org/wiki/Log-distance_path_loss_model
+	 */
+	PL = PL0 + 10.0 * param->path_loss_exponent * log10(d) + param->Xg;
+
+	return PL;
+}
+
+static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
+{
+	struct station *station, **sta_array;
+	const config_setting_t *positions, *position;
+	const config_setting_t *tx_powers, *model_params;
+	int start, end, path_loss;
+	struct log_distance_model_param param;
+	int (*calc_path_loss)(void *, struct station *, struct station *);
+	const char *path_loss_model_name;
+
+	positions = config_lookup(cf, "path_loss.positions");
+	if (!positions) {
+		fprintf(stderr, "No positions found in path_loss\n");
+		return EXIT_FAILURE;
+	}
+	if (config_setting_length(positions) != ctx->num_stas) {
+		fprintf(stderr, "Specify %d positions\n", ctx->num_stas);
+		return EXIT_FAILURE;
+	}
+
+	tx_powers = config_lookup(cf, "path_loss.tx_powers");
+	if (!tx_powers) {
+		fprintf(stderr, "No tx_powers found in path_loss\n");
+		return EXIT_FAILURE;
+	}
+	if (config_setting_length(tx_powers) != ctx->num_stas) {
+		fprintf(stderr, "Specify %d tx_powers\n", ctx->num_stas);
+		return EXIT_FAILURE;
+	}
+
+	model_params = config_lookup(cf, "path_loss.model_params");
+	if (!model_params) {
+		fprintf(stderr, "No model_params found in path_loss\n");
+		return EXIT_FAILURE;
+	}
+
+	sta_array = malloc(sizeof(struct station *) * ctx->num_stas);
+	if (!sta_array) {
+		fprintf(stderr, "Out of memory!\n");
+		return EXIT_FAILURE;
+	}
+
+	path_loss_model_name = config_setting_get_string_elem(model_params, 0);
+	if (strncmp(path_loss_model_name, "log_distance",
+		    sizeof("log_distance")) == 0) {
+		if (config_setting_length(model_params) < 3) {
+			fprintf(stderr, "log distance path loss model requires two parameters\n");
+			return EXIT_FAILURE;
+		}
+		calc_path_loss = calc_path_loss_log_distance;
+		param.path_loss_exponent =
+			config_setting_get_float_elem(model_params, 1);
+		param.Xg = config_setting_get_float_elem(model_params, 2);
+	} else {
+		fprintf(stderr, "No path loss model found\n");
+		return EXIT_FAILURE;
+	}
+
+	list_for_each_entry(station, &ctx->stations, list) {
+		position = config_setting_get_elem(positions, station->index);
+		if (config_setting_length(position) != 2) {
+			fprintf(stderr, "Invalid position: expected (double,double)\n");
+			free(sta_array);
+			return EXIT_FAILURE;
+		}
+		station->x = config_setting_get_float_elem(position, 0);
+		station->y = config_setting_get_float_elem(position, 1);
+
+		station->tx_power = config_setting_get_float_elem(
+			tx_powers, station->index);
+
+		sta_array[station->index] = station;
+	}
+
+	for (start = 0; start < ctx->num_stas; start++) {
+		for (end = 0; end < ctx->num_stas; end++) {
+			if (start == end)
+				continue;
+
+			path_loss = calc_path_loss(&param, sta_array[end],
+						   sta_array[start]);
+			ctx->snr_matrix[ctx->num_stas * start + end] =
+				sta_array[start]->tx_power - path_loss -
+				NOISE_LEVEL;
+		}
+	}
+
+	free(sta_array);
+
+	return EXIT_SUCCESS;
+}
+
 /*
  *	Loads a config file into memory
  */
 int load_config(struct wmediumd *ctx, const char *file)
 {
 	config_t cfg, *cf;
-	const config_setting_t *ids;
-	const config_setting_t *links;
+	const config_setting_t *ids, *links, *path_loss;
 	const config_setting_t *error_probs, *error_prob;
 	int count_ids, i;
 	int start, end, snr;
@@ -128,6 +259,7 @@ int load_config(struct wmediumd *ctx, const char *file)
 		station->index = i;
 		memcpy(station->addr, addr, ETH_ALEN);
 		memcpy(station->hwaddr, addr, ETH_ALEN);
+		station->tx_power = SNR_DEFAULT;
 		station_init_queues(station);
 		list_add_tail(&station->list, &ctx->stations);
 
@@ -137,9 +269,14 @@ int load_config(struct wmediumd *ctx, const char *file)
 
 	links = config_lookup(cf, "ifaces.links");
 	error_probs = config_lookup(cf, "ifaces.error_probs");
+	path_loss = config_lookup(cf, "path_loss");
 
-	if (links && error_probs) {
-		fprintf(stderr, "specify one of links/error_probs\n");
+	if ((!links && !error_probs && !path_loss) ||
+	    ( links && !error_probs && !path_loss) ||
+	    (!links &&  error_probs && !path_loss) ||
+	    (!links && !error_probs &&  path_loss)) {
+	} else {
+		fprintf(stderr, "specify one of links/error_probs/path_loss\n");
 		goto fail;
 	}
 
@@ -213,6 +350,10 @@ int load_config(struct wmediumd *ctx, const char *file)
 				config_setting_get_float_elem(error_prob, end);
 		}
 	}
+
+	/* calculate signal from positions */
+	if (path_loss && parse_path_loss(ctx, cf) != EXIT_SUCCESS)
+		goto fail;
 
 	config_destroy(cf);
 	return EXIT_SUCCESS;
