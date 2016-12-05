@@ -107,8 +107,12 @@ void rearm_timer(struct wmediumd *ctx)
 			}
 		}
 	}
-	expires.it_value = min_expires;
-	timerfd_settime(ctx->timerfd, TFD_TIMER_ABSTIME, &expires, NULL);
+
+	if (set_min_expires) {
+		expires.it_value = min_expires;
+		timerfd_settime(ctx->timerfd, TFD_TIMER_ABSTIME, &expires,
+				NULL);
+	}
 }
 
 static inline bool frame_has_a4(struct frame *frame)
@@ -184,13 +188,6 @@ static struct station *get_station_by_addr(struct wmediumd *ctx, u8 *addr)
 	return NULL;
 }
 
-static int get_link_snr(struct wmediumd *ctx,
-			struct station *sender,
-			struct station *receiver)
-{
-	return ctx->snr_matrix[sender->index * ctx->num_stas + receiver->index];
-}
-
 void queue_frame(struct wmediumd *ctx, struct station *station,
 		 struct frame *frame)
 {
@@ -199,7 +196,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 	struct timespec now, target;
 	struct wqueue *queue;
 	struct frame *tail;
-	struct station *tmpsta;
+	struct station *tmpsta, *deststa;
 	int send_time;
 	int cw;
 	double error_prob;
@@ -236,17 +233,22 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 
 	int snr = SNR_DEFAULT;
 
-	if (!is_multicast_ether_addr(dest)) {
-		struct station *deststa = get_station_by_addr(ctx, dest);
+	if (is_multicast_ether_addr(dest)) {
+		deststa = NULL;
+	} else {
+		deststa = get_station_by_addr(ctx, dest);
 		if (deststa)
-			snr = get_link_snr(ctx, station, deststa);
+			snr = ctx->get_link_snr(ctx, station, deststa);
 	}
 	frame->signal = snr;
 
 	noack = frame_is_mgmt(frame) || is_multicast_ether_addr(dest);
-	double choice = -3.14;
+	double choice = 0.0;
 
-	for (i = 0; i < IEEE80211_TX_MAX_RATES && !is_acked; i++) {
+	if (use_fixed_random_value(ctx))
+		choice = drand48();
+
+	for (i = 0; i < frame->tx_rates_count && !is_acked; i++) {
 
 		rate_idx = frame->tx_rates[i].idx;
 
@@ -254,9 +256,14 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 		if (rate_idx < 0)
 			break;
 
-		error_prob = get_error_prob(snr, rate_idx, frame->data_len);
+		error_prob = ctx->get_error_prob(ctx, snr, rate_idx,
+						 frame->data_len, station,
+						 deststa);
 		for (j = 0; j < frame->tx_rates[i].count; j++) {
 			int rate = index_to_rate[rate_idx];
+			if (rate == 0) // avoid division by zero
+				continue;
+
 			send_time += difs + pkt_duration(frame->data_len, rate);
 
 			retries++;
@@ -276,7 +283,8 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 				if (cw > queue->cw_max)
 					cw = queue->cw_max;
 			}
-			choice = drand48();
+			if (!use_fixed_random_value(ctx))
+				choice = drand48();
 			if (choice > error_prob) {
 				is_acked = true;
 				break;
@@ -287,7 +295,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 
 	if (is_acked) {
 		frame->tx_rates[i-1].count = j + 1;
-		for (; i < IEEE80211_TX_MAX_RATES; i++) {
+		for (; i < frame->tx_rates_count; i++) {
 			frame->tx_rates[i].idx = -1;
 			frame->tx_rates[i].count = -1;
 		}
@@ -318,11 +326,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 /*
  * Report transmit status to the kernel.
  */
-int send_tx_info_frame_nl(struct wmediumd *ctx,
-			  struct station *src,
-			  unsigned int flags, int signal,
-			  struct hwsim_tx_rate *tx_attempts,
-			  u64 cookie)
+static int send_tx_info_frame_nl(struct wmediumd *ctx, struct frame *frame)
 {
 	struct nl_sock *sock = ctx->sock;
 	struct nl_msg *msg;
@@ -344,13 +348,13 @@ int send_tx_info_frame_nl(struct wmediumd *ctx,
 	}
 
 	if (nla_put(msg, HWSIM_ATTR_ADDR_TRANSMITTER, ETH_ALEN,
-		    src->hwaddr) ||
-	    nla_put_u32(msg, HWSIM_ATTR_FLAGS, flags) ||
-	    nla_put_u32(msg, HWSIM_ATTR_SIGNAL, signal) ||
+		    frame->sender->hwaddr) ||
+	    nla_put_u32(msg, HWSIM_ATTR_FLAGS, frame->flags) ||
+	    nla_put_u32(msg, HWSIM_ATTR_SIGNAL, frame->signal) ||
 	    nla_put(msg, HWSIM_ATTR_TX_INFO,
-		    IEEE80211_TX_MAX_RATES * sizeof(struct hwsim_tx_rate),
-		    tx_attempts) ||
-	    nla_put_u64(msg, HWSIM_ATTR_COOKIE, cookie)) {
+		    frame->tx_rates_count * sizeof(struct hwsim_tx_rate),
+		    frame->tx_rates) ||
+	    nla_put_u64(msg, HWSIM_ATTR_COOKIE, frame->cookie)) {
 		printf("%s: Failed to fill a payload\n", __func__);
 		ret = -1;
 		goto out;
@@ -442,10 +446,13 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 				 * reverse link from sender -- check for
 				 * each receiver.
 				 */
-				signal = get_link_snr(ctx, station, frame->sender);
+				signal = ctx->get_link_snr(ctx, station,
+							   frame->sender);
 				rate_idx = frame->tx_rates[0].idx;
-				error_prob = get_error_prob((double)signal,
-							    rate_idx, frame->data_len);
+				error_prob = ctx->get_error_prob(ctx,
+					(double)signal, rate_idx,
+					frame->data_len, frame->sender,
+					station);
 
 				if (drand48() <= error_prob) {
 					printf("Dropped mcast from "
@@ -468,8 +475,7 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 		}
 	}
 
-	send_tx_info_frame_nl(ctx, frame->sender, frame->flags,
-			      frame->signal, frame->tx_rates, frame->cookie);
+	send_tx_info_frame_nl(ctx, frame);
 
 	free(frame);
 }
@@ -764,7 +770,8 @@ int main(int argc, char *argv[])
 	}
 
 	INIT_LIST_HEAD(&ctx.stations);
-	load_config(&ctx, config_file);
+	if (load_config(&ctx, config_file) != EXIT_SUCCESS)
+		return EXIT_FAILURE;
 
 	/* init libevent */
 	event_init();
