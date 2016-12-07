@@ -446,8 +446,8 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 				 * reverse link from sender -- check for
 				 * each receiver.
 				 */
-				snr = ctx->get_link_snr(ctx, station,
-							   frame->sender);
+				snr = ctx->get_link_snr(ctx, frame->sender,
+							station);
 				rate_idx = frame->tx_rates[0].idx;
 				error_prob = ctx->get_error_prob(ctx,
 					(double)snr, rate_idx, frame->data_len,
