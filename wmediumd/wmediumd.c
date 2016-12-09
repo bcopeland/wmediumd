@@ -29,6 +29,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <event.h>
+#include <math.h>
 #include <sys/timerfd.h>
 
 #include "wmediumd.h"
@@ -78,6 +79,22 @@ void timespec_add_usec(struct timespec *t, int usec)
 		t->tv_sec++;
 		t->tv_nsec -= 1000000000;
 	}
+}
+
+// a - b = c
+static int timespec_sub(struct timespec *a, struct timespec *b,
+			struct timespec *c)
+{
+	c->tv_sec = a->tv_sec - b->tv_sec;
+
+	if (a->tv_nsec < b->tv_nsec) {
+		c->tv_sec--;
+		c->tv_nsec = 1000000000 + a->tv_nsec - b->tv_nsec;
+	} else {
+		c->tv_nsec = a->tv_nsec - b->tv_nsec;
+	}
+
+	return 0;
 }
 
 void rearm_timer(struct wmediumd *ctx)
@@ -172,6 +189,69 @@ static enum ieee80211_ac_number frame_select_queue_80211(struct frame *frame)
 	return ieee802_1d_to_ac[priority];
 }
 
+static double dBm_to_milliwatt(int decibel_intf)
+{
+#define INTF_LIMIT (31)
+	int intf_diff = NOISE_LEVEL - decibel_intf;
+
+	if (intf_diff >= INTF_LIMIT)
+		return 0.001;
+
+	if (intf_diff <= -INTF_LIMIT)
+		return 1000.0;
+
+	return pow(10.0, -intf_diff / 10.0);
+}
+
+static double milliwatt_to_dBm(double value)
+{
+	return 10.0 * log10(value);
+}
+
+static int set_interference_duration(struct wmediumd *ctx, int src_idx,
+				     int duration, int signal)
+{
+	int i;
+
+	if (!ctx->intf)
+		return 0;
+
+	if (signal >= CCA_THRESHOLD)
+		return 0;
+
+	for (i = 0; i < ctx->num_stas; i++) {
+		ctx->intf[ctx->num_stas * src_idx + i].duration += duration;
+		// use only latest value
+		ctx->intf[ctx->num_stas * src_idx + i].signal = signal;
+	}
+
+	return 1;
+}
+
+static int get_signal_offset_by_interference(struct wmediumd *ctx, int src_idx,
+					     int dst_idx)
+{
+	int i;
+	double intf_power;
+
+	if (!ctx->intf)
+		return 0;
+
+	intf_power = 0.0;
+	for (i = 0; i < ctx->num_stas; i++) {
+		if (i == src_idx || i == dst_idx)
+			continue;
+		if (drand48() < ctx->intf[i * ctx->num_stas + dst_idx].prob_col)
+			intf_power += dBm_to_milliwatt(
+				ctx->intf[i * ctx->num_stas + dst_idx].signal);
+	}
+
+	if (intf_power <= 1.0)
+		return 0;
+
+	return (int)(milliwatt_to_dBm(intf_power) + 0.5);
+}
+
 bool is_multicast_ether_addr(const u8 *addr)
 {
 	return 0x01 & addr[0];
@@ -238,7 +318,9 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 	} else {
 		deststa = get_station_by_addr(ctx, dest);
 		if (deststa)
-			snr = ctx->get_link_snr(ctx, station, deststa);
+			snr = ctx->get_link_snr(ctx, station, deststa) -
+				get_signal_offset_by_interference(ctx,
+					station->index, deststa->index);
 	}
 	frame->signal = snr + NOISE_LEVEL;
 
@@ -318,6 +400,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 
 	timespec_add_usec(&target, send_time);
 
+	frame->duration = send_time;
 	frame->expires = target;
 	list_add_tail(&frame->list, &queue->frames);
 	rearm_timer(ctx);
@@ -438,7 +521,7 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 				continue;
 
 			if (is_multicast_ether_addr(dest)) {
-				int snr, rate_idx;
+				int snr, rate_idx, signal;
 				double error_prob;
 
 				/*
@@ -448,6 +531,15 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 				 */
 				snr = ctx->get_link_snr(ctx, frame->sender,
 							station);
+				signal = snr + NOISE_LEVEL;
+
+				if (set_interference_duration(ctx,
+					frame->sender->index, frame->duration,
+					signal))
+					continue;
+
+				snr -= get_signal_offset_by_interference(ctx,
+					frame->sender->index, station->index);
 				rate_idx = frame->tx_rates[0].idx;
 				error_prob = ctx->get_error_prob(ctx,
 					(double)snr, rate_idx, frame->data_len,
@@ -463,16 +555,23 @@ void deliver_frame(struct wmediumd *ctx, struct frame *frame)
 				send_cloned_frame_msg(ctx, station,
 						      frame->data,
 						      frame->data_len,
-						      1, snr + NOISE_LEVEL);
+						      1, signal);
 
 			} else if (memcmp(dest, station->addr, ETH_ALEN) == 0) {
+				if (set_interference_duration(ctx,
+					frame->sender->index, frame->duration,
+					frame->signal))
+					continue;
+
 				send_cloned_frame_msg(ctx, station,
 						      frame->data,
 						      frame->data_len,
 						      1, frame->signal);
 			}
 		}
-	}
+	} else
+		set_interference_duration(ctx, frame->sender->index,
+					  frame->duration, frame->signal);
 
 	send_tx_info_frame_nl(ctx, frame);
 
@@ -497,10 +596,10 @@ void deliver_expired_frames_queue(struct wmediumd *ctx,
 
 void deliver_expired_frames(struct wmediumd *ctx)
 {
-	struct timespec now;
+	struct timespec now, _diff;
 	struct station *station;
 	struct list_head *l;
-	int i;
+	int i, j, duration;
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	list_for_each_entry(station, &ctx->stations, list) {
@@ -520,6 +619,28 @@ void deliver_expired_frames(struct wmediumd *ctx)
 			deliver_expired_frames_queue(ctx, &station->queues[i].frames, &now);
 	}
 	printf("\n\n");
+
+	if (!ctx->intf)
+		return;
+
+	timespec_sub(&now, &ctx->intf_updated, &_diff);
+	duration = (_diff.tv_sec * 1000000) + (_diff.tv_nsec / 1000);
+	if (duration < 10000) // calc per 10 msec
+		return;
+
+	// update interference
+	for (i = 0; i < ctx->num_stas; i++)
+		for (j = 0; j < ctx->num_stas; j++) {
+			if (i == j)
+				continue;
+			// probability is used for next calc
+			ctx->intf[i * ctx->num_stas + j].prob_col =
+				ctx->intf[i * ctx->num_stas + j].duration /
+				(double)duration;
+			ctx->intf[i * ctx->num_stas + j].duration = 0;
+		}
+
+	clock_gettime(CLOCK_MONOTONIC, &ctx->intf_updated);
 }
 
 static
@@ -785,6 +906,7 @@ int main(int argc, char *argv[])
 
 	/* setup timers */
 	ctx.timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
+	clock_gettime(CLOCK_MONOTONIC, &ctx.intf_updated);
 	event_set(&ev_timer, ctx.timerfd, EV_READ | EV_PERSIST, timer_cb, &ctx);
 	event_add(&ev_timer, NULL);
 
@@ -799,6 +921,7 @@ int main(int argc, char *argv[])
 	free(ctx.cb);
 	free(ctx.cache);
 	free(ctx.family);
+	free(ctx.intf);
 
 	return EXIT_SUCCESS;
 }

@@ -218,7 +218,8 @@ int load_config(struct wmediumd *ctx, const char *file)
 	config_t cfg, *cf;
 	const config_setting_t *ids, *links, *path_loss;
 	const config_setting_t *error_probs, *error_prob;
-	int count_ids, i;
+	const config_setting_t *enable_interference;
+	int count_ids, i, j;
 	int start, end, snr;
 	struct station *station;
 
@@ -266,6 +267,22 @@ int load_config(struct wmediumd *ctx, const char *file)
 		printf("Added station %d: " MAC_FMT "\n", i, MAC_ARGS(addr));
 	}
 	ctx->num_stas = count_ids;
+
+	enable_interference = config_lookup(cf, "ifaces.enable_interference");
+	if (enable_interference &&
+	    config_setting_get_bool(enable_interference)) {
+		ctx->intf = calloc(ctx->num_stas * ctx->num_stas,
+				   sizeof(struct intf_info));
+		if (!ctx->intf) {
+			fprintf(stderr, "Out of memory(intf)\n");
+			return EXIT_FAILURE;
+		}
+		for (i = 0; i < ctx->num_stas; i++)
+			for (j = 0; j < ctx->num_stas; j++)
+				ctx->intf[i * ctx->num_stas + j].signal = -200;
+	} else {
+		ctx->intf = NULL;
+	}
 
 	links = config_lookup(cf, "ifaces.links");
 	error_probs = config_lookup(cf, "ifaces.error_probs");

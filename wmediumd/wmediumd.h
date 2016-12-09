@@ -64,7 +64,8 @@ typedef uint64_t u64;
 #define min(x,y) ((x) < (y) ? (x) : (y))
 #endif
 
-#define NOISE_LEVEL (-91)
+#define NOISE_LEVEL	(-91)
+#define CCA_THRESHOLD	(-90)
 
 struct wqueue {
 	struct list_head frames;
@@ -91,6 +92,8 @@ struct wmediumd {
 	struct list_head stations;
 	int *snr_matrix;
 	double *error_prob_matrix;
+	struct intf_info *intf;
+	struct timespec intf_updated;
 
 	struct nl_cb *cb;
 	struct nl_cache *cache;
@@ -114,6 +117,7 @@ struct frame {
 	u64 cookie;
 	int flags;
 	int signal;
+	int duration;
 	int tx_rates_count;
 	struct station *sender;
 	struct hwsim_tx_rate tx_rates[IEEE80211_TX_MAX_RATES];
@@ -124,6 +128,12 @@ struct frame {
 struct log_distance_model_param {
 	double path_loss_exponent;
 	double Xg;
+};
+
+struct intf_info {
+	int signal;
+	int duration;
+	double prob_col;
 };
 
 void station_init_queues(struct station *station);
