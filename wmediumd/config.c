@@ -21,6 +21,7 @@
  *	02110-1301, USA.
  */
 
+#include <sys/timerfd.h>
 #include <libconfig.h>
 #include <string.h>
 #include <stdlib.h>
@@ -118,14 +119,49 @@ static int calc_path_loss_log_distance(void *model_param,
 	return PL;
 }
 
+static void recalc_path_loss(struct wmediumd *ctx)
+{
+	int start, end, path_loss;
+
+	for (start = 0; start < ctx->num_stas; start++) {
+		for (end = 0; end < ctx->num_stas; end++) {
+			if (start == end)
+				continue;
+
+			path_loss = ctx->calc_path_loss(ctx->path_loss_param,
+				ctx->sta_array[end], ctx->sta_array[start]);
+			ctx->snr_matrix[ctx->num_stas * start + end] =
+				ctx->sta_array[start]->tx_power - path_loss -
+				NOISE_LEVEL;
+		}
+	}
+}
+
+static void move_stations_to_direction(struct wmediumd *ctx)
+{
+	struct station *station;
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (!timespec_before(&ctx->next_move, &now))
+		return;
+
+	list_for_each_entry(station, &ctx->stations, list) {
+		station->x += station->dir_x;
+		station->y += station->dir_y;
+	}
+	recalc_path_loss(ctx);
+
+	clock_gettime(CLOCK_MONOTONIC, &ctx->next_move);
+	ctx->next_move.tv_sec += MOVE_INTERVAL;
+}
+
 static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 {
-	struct station *station, **sta_array;
+	struct station *station;
 	const config_setting_t *positions, *position;
+	const config_setting_t *directions, *direction;
 	const config_setting_t *tx_powers, *model_params;
-	int start, end, path_loss;
-	struct log_distance_model_param param;
-	int (*calc_path_loss)(void *, struct station *, struct station *);
 	const char *path_loss_model_name;
 
 	positions = config_lookup(cf, "path_loss.positions");
@@ -136,6 +172,16 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 	if (config_setting_length(positions) != ctx->num_stas) {
 		fprintf(stderr, "Specify %d positions\n", ctx->num_stas);
 		return EXIT_FAILURE;
+	}
+
+	directions = config_lookup(cf, "path_loss.directions");
+	if (directions) {
+		if (config_setting_length(directions) != ctx->num_stas) {
+			fprintf(stderr, "Specify %d directions\n",
+				ctx->num_stas);
+			return EXIT_FAILURE;
+		}
+		ctx->move_stations = move_stations_to_direction;
 	}
 
 	tx_powers = config_lookup(cf, "path_loss.tx_powers");
@@ -154,23 +200,27 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 		return EXIT_FAILURE;
 	}
 
-	sta_array = malloc(sizeof(struct station *) * ctx->num_stas);
-	if (!sta_array) {
-		fprintf(stderr, "Out of memory!\n");
-		return EXIT_FAILURE;
-	}
-
 	path_loss_model_name = config_setting_get_string_elem(model_params, 0);
 	if (strncmp(path_loss_model_name, "log_distance",
 		    sizeof("log_distance")) == 0) {
+		struct log_distance_model_param *param;
+
 		if (config_setting_length(model_params) < 3) {
 			fprintf(stderr, "log distance path loss model requires two parameters\n");
 			return EXIT_FAILURE;
 		}
-		calc_path_loss = calc_path_loss_log_distance;
-		param.path_loss_exponent =
+
+		ctx->calc_path_loss = calc_path_loss_log_distance;
+
+		param = malloc(sizeof(*param));
+		if (!param) {
+			fprintf(stderr, "Out of memory(path_loss_param)\n");
+			return EXIT_FAILURE;
+		}
+		param->path_loss_exponent =
 			config_setting_get_float_elem(model_params, 1);
-		param.Xg = config_setting_get_float_elem(model_params, 2);
+		param->Xg = config_setting_get_float_elem(model_params, 2);
+		ctx->path_loss_param = param;
 	} else {
 		fprintf(stderr, "No path loss model found\n");
 		return EXIT_FAILURE;
@@ -180,32 +230,29 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 		position = config_setting_get_elem(positions, station->index);
 		if (config_setting_length(position) != 2) {
 			fprintf(stderr, "Invalid position: expected (double,double)\n");
-			free(sta_array);
 			return EXIT_FAILURE;
 		}
 		station->x = config_setting_get_float_elem(position, 0);
 		station->y = config_setting_get_float_elem(position, 1);
 
+		if (directions) {
+			direction = config_setting_get_elem(directions,
+				station->index);
+			if (config_setting_length(direction) != 2) {
+				fprintf(stderr, "Invalid direction: expected (double,double)\n");
+				return EXIT_FAILURE;
+			}
+			station->dir_x = config_setting_get_float_elem(
+				direction, 0);
+			station->dir_y = config_setting_get_float_elem(
+				direction, 1);
+		}
+
 		station->tx_power = config_setting_get_float_elem(
 			tx_powers, station->index);
-
-		sta_array[station->index] = station;
 	}
 
-	for (start = 0; start < ctx->num_stas; start++) {
-		for (end = 0; end < ctx->num_stas; end++) {
-			if (start == end)
-				continue;
-
-			path_loss = calc_path_loss(&param, sta_array[end],
-						   sta_array[start]);
-			ctx->snr_matrix[ctx->num_stas * start + end] =
-				sta_array[start]->tx_power - path_loss -
-				NOISE_LEVEL;
-		}
-	}
-
-	free(sta_array);
+	recalc_path_loss(ctx);
 
 	return EXIT_SUCCESS;
 }
@@ -247,6 +294,12 @@ int load_config(struct wmediumd *ctx, const char *file)
 	printf("#_if = %d\n", count_ids);
 
 	/* Fill the mac_addr */
+	ctx->sta_array = malloc(sizeof(struct station *) * count_ids);
+	if (!ctx->sta_array) {
+		fprintf(stderr, "Out of memory(sta_array)!\n");
+		return EXIT_FAILURE;
+	}
+
 	for (i = 0; i < count_ids; i++) {
 		u8 addr[ETH_ALEN];
 		const char *str =  config_setting_get_string_elem(ids, i);
@@ -263,6 +316,7 @@ int load_config(struct wmediumd *ctx, const char *file)
 		station->tx_power = SNR_DEFAULT;
 		station_init_queues(station);
 		list_add_tail(&station->list, &ctx->stations);
+		ctx->sta_array[i] = station;
 
 		printf("Added station %d: " MAC_FMT "\n", i, MAC_ARGS(addr));
 	}
