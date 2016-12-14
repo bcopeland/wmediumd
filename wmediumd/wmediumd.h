@@ -103,6 +103,9 @@ struct wmediumd {
 	void (*move_stations)(struct wmediumd *);
 #define MOVE_INTERVAL	(3) /* station movement interval [sec] */
 	struct timespec next_move;
+	float *per_matrix;
+	int per_matrix_row_num;
+	int per_matrix_signal_min;
 
 	struct nl_cb *cb;
 	struct nl_cache *cache;
@@ -149,5 +152,6 @@ void station_init_queues(struct station *station);
 double get_error_prob_from_snr(double snr, unsigned int rate_idx,
 			       int frame_len);
 bool timespec_before(struct timespec *t1, struct timespec *t2);
+int read_per_file(struct wmediumd *ctx, const char *file_name);
 
 #endif /* WMEDIUMD_H_ */

@@ -260,7 +260,7 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 /*
  *	Loads a config file into memory
  */
-int load_config(struct wmediumd *ctx, const char *file)
+int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 {
 	config_t cfg, *cf;
 	const config_setting_t *ids, *links, *path_loss;
@@ -351,8 +351,18 @@ int load_config(struct wmediumd *ctx, const char *file)
 		goto fail;
 	}
 
+	if (per_file && error_probs) {
+		fprintf(stderr, "per_file and error_probs could not be used at the same time\n");
+		goto fail;
+	}
+
 	ctx->get_link_snr = get_link_snr_from_snr_matrix;
 	ctx->get_error_prob = _get_error_prob_from_snr;
+
+	ctx->per_matrix = NULL;
+	ctx->per_matrix_row_num = 0;
+	if (per_file && read_per_file(ctx, per_file) != EXIT_SUCCESS)
+		goto fail;
 
 	/* create link quality matrix */
 	ctx->snr_matrix = calloc(sizeof(int), count_ids * count_ids);
