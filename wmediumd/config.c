@@ -257,6 +257,27 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 	return EXIT_SUCCESS;
 }
 
+static double pseudo_normal_distribution(void)
+{
+	int i;
+	double normal = -6.0;
+
+	for (i = 0; i < 12; i++)
+		normal += drand48();
+
+	return normal;
+}
+
+static int _get_fading_signal(struct wmediumd *ctx)
+{
+	return ctx->fading_coefficient * pseudo_normal_distribution();
+}
+
+static int get_no_fading_signal(struct wmediumd *ctx)
+{
+	return 0;
+}
+
 /*
  *	Loads a config file into memory
  */
@@ -266,6 +287,7 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 	const config_setting_t *ids, *links, *path_loss;
 	const config_setting_t *error_probs, *error_prob;
 	const config_setting_t *enable_interference;
+	const config_setting_t *fading_coefficient;
 	int count_ids, i, j;
 	int start, end, snr;
 	struct station *station;
@@ -336,6 +358,18 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 				ctx->intf[i * ctx->num_stas + j].signal = -200;
 	} else {
 		ctx->intf = NULL;
+	}
+
+	fading_coefficient =
+		config_lookup(cf, "ifaces.fading_coefficient");
+	if (fading_coefficient &&
+	    config_setting_get_int(fading_coefficient) > 0) {
+		ctx->get_fading_signal = _get_fading_signal;
+		ctx->fading_coefficient =
+			config_setting_get_int(fading_coefficient);
+	} else {
+		ctx->get_fading_signal = get_no_fading_signal;
+		ctx->fading_coefficient = 0;
 	}
 
 	links = config_lookup(cf, "ifaces.links");

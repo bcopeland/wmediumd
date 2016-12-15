@@ -107,6 +107,9 @@ struct wmediumd {
 	int per_matrix_row_num;
 	int per_matrix_signal_min;
 
+	int (*get_fading_signal)(struct wmediumd *);
+	int fading_coefficient;
+
 	struct nl_cb *cb;
 	struct nl_cache *cache;
 	struct genl_family *family;
