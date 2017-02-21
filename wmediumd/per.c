@@ -28,9 +28,10 @@ static double get_error_prob_from_per_matrix(struct wmediumd *ctx, double snr,
 		return 0.0;
 
 	if (rate_idx >= PER_MATRIX_RATE_LEN) {
-		w_flogf(ctx, LOG_ERR, stderr,
-			"%s: invalid rate_idx=%d\n", __func__, rate_idx);
-		exit(EXIT_FAILURE);
+		w_flogf(ctx, LOG_WARNING, stderr,
+			"%s: invalid rate_idx=%d is replaced by %d\n",
+			__func__, rate_idx, PER_MATRIX_RATE_LEN - 1);
+		rate_idx = PER_MATRIX_RATE_LEN - 1;
 	}
 
 	return ctx->per_matrix[signal_idx * PER_MATRIX_RATE_LEN + rate_idx];
