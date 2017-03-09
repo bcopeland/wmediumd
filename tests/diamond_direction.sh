@@ -38,8 +38,8 @@ model :
 	type = "path_loss";
 	positions = (
 		(-50.0,   0.0),
-		(  0.0,  70.0),
-		(  0.0,-100.0),
+		(  0.0,  50.0),
+		(  0.0, -90.0),
 		( 50.0,   0.0)
 	);
 	directions = (
@@ -110,6 +110,6 @@ tmux send-keys -t $win '../wmediumd/wmediumd -c diamond.cfg -x signal_table_ieee
 tmux send-keys -t $session:0 'ip link set hwsim0 up' C-m
 
 tmux select-window -t $session:1
-tmux send-keys -t $session:1 'ping -c 15 10.10.10.13' C-m
+tmux send-keys -t $session:1 'ping -c 18 10.10.10.13' C-m
 
 tmux attach
