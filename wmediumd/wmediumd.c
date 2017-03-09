@@ -41,10 +41,9 @@
 static int index_to_rate(int index)
 {
 	static int rates[] = { 60, 90, 120, 180, 240, 360, 480, 540 };
-	static int rate_len = 8;
 
-	if (index >= rate_len)
-		index = rate_len - 1;
+	if (index >= PER_MATRIX_RATE_LEN)
+		index = PER_MATRIX_RATE_LEN - 1;
 
 	return rates[index];
 }

@@ -67,6 +67,7 @@ typedef uint64_t u64;
 
 #define NOISE_LEVEL	(-91)
 #define CCA_THRESHOLD	(-90)
+#define PER_MATRIX_RATE_LEN (8)
 
 struct wqueue {
 	struct list_head frames;
