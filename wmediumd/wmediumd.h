@@ -104,6 +104,7 @@ enum {
 #include <stdint.h>
 #include <stdbool.h>
 #include <syslog.h>
+#include <stdio.h>
 
 #include "list.h"
 #include "ieee80211.h"
