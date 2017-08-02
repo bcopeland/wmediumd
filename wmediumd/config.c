@@ -85,6 +85,32 @@ int use_fixed_random_value(struct wmediumd *ctx)
 #define FREQ_1CH (2.412e9)		// [Hz]
 #define SPEED_LIGHT (2.99792458e8)	// [meter/sec]
 /*
+ * Calculate path loss based on a free-space path loss
+ *
+ * This function returns path loss [dBm].
+ */
+static int calc_path_loss_free_space(void *model_param,
+			  struct station *dst, struct station *src)
+{
+	double PL, d;
+
+	d = sqrt((src->x - dst->x) * (src->x - dst->x) +
+		 (src->y - dst->y) * (src->y - dst->y));
+
+	/*
+	 * Calculate PL0 with Free-space path loss in decibels
+	 *
+	 * 20 * log10 * (4 * M_PI * d * f / c)
+	 *   d: distance [meter]
+	 *   f: frequency [Hz]
+	 *   c: speed of light in a vacuum [meter/second]
+	 *
+	 * https://en.wikipedia.org/wiki/Free-space_path_loss
+	 */
+	PL = 20.0 * log10(4.0 * M_PI * d * FREQ_1CH / SPEED_LIGHT);
+	return PL;
+}
+/*
  * Calculate path loss based on a log distance model
  *
  * This function returns path loss [dBm].
@@ -118,6 +144,37 @@ static int calc_path_loss_log_distance(void *model_param,
 	 */
 	PL = PL0 + 10.0 * param->path_loss_exponent * log10(d) + param->Xg;
 
+	return PL;
+}
+/*
+ * Calculate path loss based on a itu model
+ *
+ * This function returns path loss [dBm].
+ */
+static int calc_path_loss_itu(void *model_param,
+			  struct station *dst, struct station *src)
+{
+	struct itu_model_param *param;
+	double PL, d;
+	double freq = FREQ_1CH / 1000000;
+	int N=28;
+
+	param = model_param;
+
+	d = sqrt((src->x - dst->x) * (src->x - dst->x) +
+		 (src->y - dst->y) * (src->y - dst->y));
+
+	if (d>16)
+		N=38;
+	/*
+	 * Calculate signal strength with ITU path loss model
+	 * Power Loss Coefficient Based on the Paper
+         * Site-Specific Validation of ITU Indoor Path Loss Model at 2.4 GHz
+         * from Theofilos Chrysikos, Giannis Georgopoulos and Stavros Kotsopoulos
+	 * LF: floor penetration loss factor
+	 * nFLOORS: number of floors
+	 */
+	PL = 20.0 * log10(FREQ_1CH) + N * log10(d) + param->LF * param->nFLOORS - 28;
 	return PL;
 }
 
@@ -236,7 +293,44 @@ static int parse_path_loss(struct wmediumd *ctx, config_t *cf)
 			return -EINVAL;
 		}
 		ctx->path_loss_param = param;
-	} else {
+	}
+	else if (strncmp(path_loss_model_name, "free_space",
+			sizeof("free_space")) == 0) {
+		struct log_distance_model_param *param;
+		ctx->calc_path_loss = calc_path_loss_free_space;
+		param = malloc(sizeof(*param));
+		if (!param) {
+			w_flogf(ctx, LOG_ERR, stderr,
+				"Out of memory(path_loss_param)\n");
+			return -EINVAL;
+		}
+	}
+	else if (strncmp(path_loss_model_name, "itu",
+			sizeof("itu")) == 0) {
+		struct itu_model_param *param;
+		ctx->calc_path_loss = calc_path_loss_itu;
+		param = malloc(sizeof(*param));
+		if (!param) {
+			w_flogf(ctx, LOG_ERR, stderr,
+				"Out of memory(path_loss_param)\n");
+			return -EINVAL;
+		}
+
+		if (config_setting_lookup_int(model, "nFLOORS",
+			&param->nFLOORS) != CONFIG_TRUE) {
+			w_flogf(ctx, LOG_ERR, stderr,
+				"nFLOORS not found\n");
+			return -EINVAL;
+		}
+
+		if (config_setting_lookup_int(model, "LF",
+			&param->LF) != CONFIG_TRUE) {
+			w_flogf(ctx, LOG_ERR, stderr, "LF not found\n");
+			return -EINVAL;
+		}
+		ctx->path_loss_param = param;
+	}
+	else {
 		w_flogf(ctx, LOG_ERR, stderr, "No path loss model found\n");
 		return -EINVAL;
 	}

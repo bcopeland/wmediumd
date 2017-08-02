@@ -203,6 +203,11 @@ struct log_distance_model_param {
 	double Xg;
 };
 
+struct itu_model_param {
+	int nFLOORS;
+	int LF;
+};
+
 struct intf_info {
 	int signal;
 	int duration;
