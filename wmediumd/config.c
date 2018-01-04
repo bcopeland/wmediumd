@@ -310,6 +310,7 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 	struct station *station;
 	const char *model_type_str;
 	float default_prob_value = 0.0;
+	bool asym_prob = false;
 
 	/*initialize the config file*/
 	cf = &cfg;
@@ -409,15 +410,23 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 			model_type_str = config_setting_get_string(model_type);
 			if (memcmp("snr", model_type_str, strlen("snr")) == 0) {
 				links = config_lookup(cf, "model.links");
+			} else if (memcmp("prob_asymmetric", model_type_str,
+				strlen("prob_asymmetric")) == 0) {
+				asym_prob = true;
+				error_probs = config_lookup(cf, "model.links");
 			} else if (memcmp("prob", model_type_str,
 				strlen("prob")) == 0) {
+				asym_prob = false;
 				error_probs = config_lookup(cf, "model.links");
 			} else if (memcmp("path_loss", model_type_str,
 				strlen("path_loss")) == 0) {
 				/* calculate signal from positions */
 				if (parse_path_loss(ctx, cf))
 					goto fail;
-			}
+			} else {
+				w_flogf(ctx, LOG_ERR, stderr, "Invalid model type!\n");
+				return -EINVAL;
+            }
 		}
 	}
 
@@ -516,9 +525,10 @@ int load_config(struct wmediumd *ctx, const char *file, const char *per_file)
 			goto fail;
 		}
 
-		ctx->error_prob_matrix[ctx->num_stas * start + end] =
-		ctx->error_prob_matrix[ctx->num_stas * end + start] =
-			error_prob_value;
+		ctx->error_prob_matrix[ctx->num_stas * start + end] = error_prob_value;
+		if (!asym_prob)
+			ctx->error_prob_matrix[ctx->num_stas * end + start] =
+				error_prob_value;
 	}
 
 	config_destroy(cf);
