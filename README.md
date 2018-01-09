@@ -91,6 +91,44 @@ other links.
 This is a very simplistic model that does not take into account that losses
 depend on transmission rates and signal-to-noise ratio.  For that, keep reading.
 
+## Asymmetric loss probability
+
+To model links with asymmetric probabilities you can use the model type "prob_asymmetric".
+
+```
+ifaces :
+{
+	ids = [
+		"02:00:00:00:00:00",
+		"02:00:00:00:01:00",
+		"02:00:00:00:02:00",
+		"02:00:00:00:03:00"
+	];
+};
+
+model:
+{
+	type = "prob_asymmetric";
+
+	default_prob = 1.0;
+	links = (
+		(0, 2, 0.200000),
+		(2, 0, 0.800000)
+		(0, 1, 0.500000)
+	);
+};
+```
+
+The above configuration would assign 20% loss probability to all frames flowing
+between nodes 0 and 2, and 80% loss probability to frames flowing between 2 and
+0.
+
+If only one link direction is explicitly listed in the `links` section, the
+opposite direction will be assigned the `default_prob`.  In the example above,
+traffic originated in node 1 and destined to node 0 would be assigned
+100% loss probability.
+
+
 ## Per-link signal-to-noise ratio (SNR) model
 
 You can model different signal-to-noise ratios for each link by including a
