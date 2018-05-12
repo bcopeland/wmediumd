@@ -18,6 +18,7 @@ fi
 
 modprobe -r mac80211_hwsim
 modprobe mac80211_hwsim radios=$num_nodes
+iw reg set US
 
 for i in `seq 0 $((num_nodes-1))`; do
 	addrs[$i]=`printf $macfmt $i`
@@ -38,19 +39,24 @@ ifaces :
 	enable_interference = true;
 };
 
-path_loss :
+model :
 {
+	band = 2;
+	type = "path_loss";
 	positions = (
-		(-70.0,   0.0),
+		(-69.0,   0.0),
 		(  0.0,   0.0),
-		( 70.0,   0.0),
+		( 69.0,   0.0),
 		(130.0,  -2.0),
 		(130.0,  -1.0),
 		(130.0,   2.0),
 		(130.0,   1.0)
 	);
 	tx_powers = (15.0, 15.0, 15.0, 11.0, 11.0, 11.0, 11.0);
-	model_params = ("log_distance", 3.5, 0.0);
+
+	model_name = "log_distance";
+	path_loss_exp = 3.5;
+	xg = 0.0;
 };
 __EOM
 
@@ -111,10 +117,10 @@ tmux send-keys -t $session:7 'iperf -s' C-m
 # enable monitor
 tmux send-keys -t $session:0 'ip link set hwsim0 up' C-m
 
-tmux send-keys -t $session:4 'sleep 2; iperf -u -b 100000000 -c 10.10.10.14 -t 6' C-m
-tmux send-keys -t $session:6 'sleep 2; iperf -u -b 100000000 -c 10.10.10.16 -t 6' C-m
+tmux send-keys -t $session:4 'iperf -u -b 100M -c 10.10.10.14 -t 10' C-m
+tmux send-keys -t $session:6 'iperf -u -b 100M -c 10.10.10.16 -t 10' C-m
 
 tmux select-window -t $session:1
-tmux send-keys -t $session:1 'sleep 2; ping -c 5 10.10.10.12' C-m
+tmux send-keys -t $session:1 'sleep 2; ping -c 5 -W 1 10.10.10.12' C-m
 
 tmux attach
