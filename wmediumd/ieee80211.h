@@ -33,6 +33,8 @@
 #endif
 
 #define FCTL_FTYPE		0x0c
+#define FCTL_STYPE		0xf0
+
 #define FCTL_TODS		0x01
 #define FCTL_FROMDS		0x02
 
@@ -40,6 +42,8 @@
 #define FTYPE_DATA		0x08
 
 #define STYPE_QOS_DATA		0x80
+#define STYPE_AUTH		0xb0
+#define STYPE_ACTION		0xd0
 
 #define QOS_CTL_TAG1D_MASK	0x07
 
@@ -68,7 +72,10 @@ struct ieee80211_hdr {
 	unsigned char addr2[ETH_ALEN];
 	unsigned char addr3[ETH_ALEN];
 	unsigned char seq_ctrl[2];
-	unsigned char addr4[ETH_ALEN];
+	union {
+		unsigned char addr4[ETH_ALEN];
+		unsigned char data[0];
+	};
 };
 
 #endif /* IEEE80211_H_ */

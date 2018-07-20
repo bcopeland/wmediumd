@@ -102,11 +102,14 @@ enum {
 #define SNR_DEFAULT 30
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <syslog.h>
+#include <sys/timerfd.h>
 
 #include "list.h"
 #include "ieee80211.h"
+#include "filter.h"
 
 typedef uint8_t u8;
 typedef uint32_t u32;
@@ -161,6 +164,8 @@ struct wmediumd {
 	int per_matrix_row_num;
 	int per_matrix_signal_min;
 	int fading_coefficient;
+
+	struct filter *filter;
 
 	struct nl_cb *cb;
 	int family_id;
@@ -223,5 +228,95 @@ int read_per_file(struct wmediumd *ctx, const char *file_name);
 int w_logf(struct wmediumd *ctx, u8 level, const char *format, ...);
 int w_flogf(struct wmediumd *ctx, u8 level, FILE *stream, const char *format, ...);
 int index_to_rate(size_t index, u32 freq);
+
+static inline bool frame_has_a4(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[1] & (FCTL_TODS | FCTL_FROMDS)) ==
+		(FCTL_TODS | FCTL_FROMDS);
+}
+
+static inline bool frame_is_mgmt(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[0] & FCTL_FTYPE) == FTYPE_MGMT;
+}
+
+static inline bool frame_is_data(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[0] & FCTL_FTYPE) == FTYPE_DATA;
+}
+
+static inline bool frame_is_auth(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[0] & (FCTL_FTYPE | FCTL_STYPE)) ==
+		(FTYPE_MGMT | STYPE_AUTH);
+}
+
+static inline bool frame_is_action(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[0] & (FCTL_FTYPE | FCTL_STYPE)) ==
+		(FTYPE_MGMT | STYPE_ACTION);
+}
+
+static inline bool frame_is_sae_commit(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	if (!frame_is_auth(frame))
+		return false;
+
+	/* note, size includes addr4 */
+	if (frame->data_len < sizeof(struct ieee80211_hdr *))
+		return false;
+
+	return hdr->data[0] == 3 &&
+	       hdr->data[1] == 0 &&
+	       hdr->data[2] == 0 &&
+	       hdr->data[3] == 0;
+}
+
+static inline bool frame_is_sae_confirm(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	if (!frame_is_auth(frame))
+		return false;
+
+	/* note, size includes addr4 */
+	if (frame->data_len < sizeof(struct ieee80211_hdr *))
+		return false;
+
+	return hdr->data[0] == 3 &&
+	       hdr->data[1] == 0 &&
+	       hdr->data[2] == 1 &&
+	       hdr->data[3] == 0;
+}
+
+static inline bool frame_is_data_qos(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	return (hdr->frame_control[0] & (FCTL_FTYPE | STYPE_QOS_DATA)) ==
+		(FTYPE_DATA | STYPE_QOS_DATA);
+}
+
+static inline u8 *frame_get_qos_ctl(struct frame *frame)
+{
+	struct ieee80211_hdr *hdr = (void *)frame->data;
+
+	if (frame_has_a4(frame))
+		return (u8 *)hdr + 30;
+	else
+		return (u8 *)hdr + 24;
+}
 
 #endif /* WMEDIUMD_H_ */

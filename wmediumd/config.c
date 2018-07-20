@@ -30,7 +30,7 @@
 
 #include "wmediumd.h"
 
-static void string_to_mac_address(const char *str, u8 *addr)
+void string_to_mac_address(const char *str, u8 *addr)
 {
 	int a[ETH_ALEN];
 

@@ -24,6 +24,7 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
+void string_to_mac_address(const char *str, u8 *addr);
 int load_config(struct wmediumd *ctx, const char *file, const char *per_file);
 int use_fixed_random_value(struct wmediumd *ctx);
 

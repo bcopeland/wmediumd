@@ -1,3 +1,12 @@
+function get_hwsim_radios {
+    local radios=""
+    for dev in /sys/devices/virtual/mac80211_hwsim/*; do
+        phy=$(basename $dev/ieee80211/*)
+        radios="$radios $phy"
+    done
+    echo $radios
+}
+
 function freq_to_chan {
 	local freq=$1
 
@@ -17,9 +26,13 @@ function meshup-iw {
 	local meshid=$2
 	local freq=$3
 	local ip=$4
+	local addr=$5
 
 	ip link set $if down
 	iw dev $if set type mp
+	if [ -n $addr ]; then
+		ip link set $if addr $addr
+	fi
 	ip link set $if up
 	iw dev $if mesh join $meshid freq $freq
 	ip addr add $ip/24 dev $if 2>/dev/null
@@ -30,9 +43,13 @@ function meshup-wpas-open {
 	local meshid=$2
 	local freq=$3
 	local ip=$4
+	local addr=$5
 
 	ip link set $if down
 	iw dev $if set type mp
+	if [ -n $addr ]; then
+		ip link set $if addr $addr
+	fi
 	ip link set $if up
 
 	cat<<EOM > /tmp/wpas-$if.conf
@@ -52,9 +69,13 @@ function meshup-wpas {
 	local meshid=$2;
 	local freq=$3;
 	local ip=$4;
+	local addr=$5;
 
 	ip link set $if down
 	iw dev $if set type mp
+	if [ -n $addr ]; then
+		ip link set $if addr $addr
+	fi
 	ip link set $if up
 
 	cat<<EOM > /tmp/wpas-$if.conf
@@ -75,9 +96,13 @@ function meshup-authsae {
 	local meshid=$2;
 	local freq=$3;
 	local ip=$4;
+	local addr=$5;
 
 	ip link set $if down
 	iw dev $if set type mp
+	if [ -n $addr ]; then
+		ip link set $if addr $addr
+	fi
 	ip link set $if up
 
 	chan_params=$(freq_to_chan $freq)

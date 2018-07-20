@@ -30,7 +30,6 @@
 #include <signal.h>
 #include <event.h>
 #include <math.h>
-#include <sys/timerfd.h>
 #include <errno.h>
 #include <limits.h>
 
@@ -151,46 +150,6 @@ void rearm_timer(struct wmediumd *ctx)
 	}
 }
 
-static inline bool frame_has_a4(struct frame *frame)
-{
-	struct ieee80211_hdr *hdr = (void *)frame->data;
-
-	return (hdr->frame_control[1] & (FCTL_TODS | FCTL_FROMDS)) ==
-		(FCTL_TODS | FCTL_FROMDS);
-}
-
-static inline bool frame_is_mgmt(struct frame *frame)
-{
-	struct ieee80211_hdr *hdr = (void *)frame->data;
-
-	return (hdr->frame_control[0] & FCTL_FTYPE) == FTYPE_MGMT;
-}
-
-static inline bool frame_is_data(struct frame *frame)
-{
-	struct ieee80211_hdr *hdr = (void *)frame->data;
-
-	return (hdr->frame_control[0] & FCTL_FTYPE) == FTYPE_DATA;
-}
-
-static inline bool frame_is_data_qos(struct frame *frame)
-{
-	struct ieee80211_hdr *hdr = (void *)frame->data;
-
-	return (hdr->frame_control[0] & (FCTL_FTYPE | STYPE_QOS_DATA)) ==
-		(FTYPE_DATA | STYPE_QOS_DATA);
-}
-
-static inline u8 *frame_get_qos_ctl(struct frame *frame)
-{
-	struct ieee80211_hdr *hdr = (void *)frame->data;
-
-	if (frame_has_a4(frame))
-		return (u8 *)hdr + 30;
-	else
-		return (u8 *)hdr + 24;
-}
-
 static enum ieee80211_ac_number frame_select_queue_80211(struct frame *frame)
 {
 	u8 *p;
@@ -287,6 +246,13 @@ static struct station *get_station_by_addr(struct wmediumd *ctx, u8 *addr)
 	return NULL;
 }
 
+static
+bool filter_frame(struct wmediumd *ctx, struct frame *frame,
+		  struct filter *filter)
+{
+	return filter_matches(filter, frame) == FILTER_DROP;
+}
+
 void queue_frame(struct wmediumd *ctx, struct station *station,
 		 struct frame *frame)
 {
@@ -363,11 +329,15 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 		error_prob = ctx->get_error_prob(ctx, snr, rate_idx,
 						 frame->freq, frame->data_len,
 						 station, deststa);
+
 		for (j = 0; j < frame->tx_rates[i].count; j++) {
 			send_time += difs + pkt_duration(frame->data_len,
 				index_to_rate(rate_idx, frame->freq));
 
 			retries++;
+
+			if (ctx->filter && filter_frame(ctx, frame, ctx->filter))
+				break;
 
 			/* skip ack/backoff/retries for noack frames */
 			if (noack) {
@@ -384,6 +354,7 @@ void queue_frame(struct wmediumd *ctx, struct station *station,
 				if (cw > queue->cw_max)
 					cw = queue->cw_max;
 			}
+
 			if (!use_fixed_random_value(ctx))
 				choice = drand48();
 			if (choice > error_prob) {
@@ -883,7 +854,7 @@ int main(int argc, char *argv[])
 	unsigned long int parse_log_lvl;
 	char* parse_end_token;
 
-	while ((opt = getopt(argc, argv, "hVc:l:x:")) != -1) {
+	while ((opt = getopt(argc, argv, "hVc:l:x:f:")) != -1) {
 		switch (opt) {
 		case 'h':
 			print_help(EXIT_SUCCESS);
@@ -899,6 +870,9 @@ int main(int argc, char *argv[])
 		case 'x':
 			printf("Input packet error rate file: %s\n", optarg);
 			per_file = optarg;
+			break;
+		case 'f':
+			ctx.filter = filter_parse(optarg);
 			break;
 		case ':':
 			printf("wmediumd: Error - Option `%c' "
