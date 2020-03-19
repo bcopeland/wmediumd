@@ -519,6 +519,9 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 				signal))
 				continue;
 
+			if (signal < CCA_THRESHOLD)
+				continue;
+
 			if (is_multicast_ether_addr(dest)) {
 				int rate_idx;
 				double error_prob;
@@ -528,9 +531,6 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 				 * reverse link from sender -- check for
 				 * each receiver.
 				 */
-				if (signal < CCA_THRESHOLD)
-					continue;
-
 				snr -= get_signal_offset_by_interference(ctx,
 					frame->sender->index, receiver->index);
 				rate_idx = frame->tx_rates[0].idx;
