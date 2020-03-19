@@ -176,24 +176,22 @@ static double milliwatt_to_dBm(double value)
 	return 10.0 * log10(value);
 }
 
-static int set_interference_duration(struct wmediumd *ctx, int src_idx,
-				     int duration, int signal)
+static void set_interference_duration(struct wmediumd *ctx, int src_idx,
+				      int duration, int signal)
 {
 	int i;
 
 	if (!ctx->intf)
-		return 0;
+		return;
 
 	if (signal >= CCA_THRESHOLD)
-		return 0;
+		return;
 
 	for (i = 0; i < ctx->num_stas; i++) {
 		ctx->intf[ctx->num_stas * src_idx + i].duration += duration;
 		// use only latest value
 		ctx->intf[ctx->num_stas * src_idx + i].signal = signal;
 	}
-
-	return 1;
 }
 
 static int get_signal_offset_by_interference(struct wmediumd *ctx, int src_idx,
@@ -514,10 +512,8 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 			} else
 				continue;
 
-			if (set_interference_duration(ctx,
-				frame->sender->index, frame->duration,
-				signal))
-				continue;
+			set_interference_duration(ctx, frame->sender->index,
+						  frame->duration, signal);
 
 			if (signal < CCA_THRESHOLD)
 				continue;
