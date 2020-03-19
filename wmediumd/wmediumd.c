@@ -490,7 +490,7 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 	struct wmediumd *ctx = job->data;
 	struct frame *frame = container_of(job, struct frame, job);
 	struct ieee80211_hdr *hdr = (void *) frame->data;
-	struct station *station;
+	struct station *receiver;
 	u8 *dest = hdr->addr1;
 	u8 *src = frame->sender->addr;
 
@@ -498,8 +498,8 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 
 	if (frame->flags & HWSIM_TX_STAT_ACK) {
 		/* rx the frame on the dest interface */
-		list_for_each_entry(station, &ctx->stations, list) {
-			if (memcmp(src, station->addr, ETH_ALEN) == 0)
+		list_for_each_entry(receiver, &ctx->stations, list) {
+			if (memcmp(src, receiver->addr, ETH_ALEN) == 0)
 				continue;
 
 			if (is_multicast_ether_addr(dest)) {
@@ -512,7 +512,7 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 				 * each receiver.
 				 */
 				snr = ctx->get_link_snr(ctx, frame->sender,
-							station);
+							receiver);
 				snr += ctx->get_fading_signal(ctx);
 				signal = snr + NOISE_LEVEL;
 				if (signal < CCA_THRESHOLD)
@@ -524,33 +524,33 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 					continue;
 
 				snr -= get_signal_offset_by_interference(ctx,
-					frame->sender->index, station->index);
+					frame->sender->index, receiver->index);
 				rate_idx = frame->tx_rates[0].idx;
 				error_prob = ctx->get_error_prob(ctx,
 					(double)snr, rate_idx, frame->freq,
 					frame->data_len, frame->sender,
-					station);
+					receiver);
 
 				if (drand48() <= error_prob) {
 					w_logf(ctx, LOG_INFO, "Dropped mcast from "
 						   MAC_FMT " to " MAC_FMT " at receiver\n",
-						   MAC_ARGS(src), MAC_ARGS(station->addr));
+						   MAC_ARGS(src), MAC_ARGS(receiver->addr));
 					continue;
 				}
 
-				send_cloned_frame_msg(ctx, station,
+				send_cloned_frame_msg(ctx, receiver,
 						      frame->data,
 						      frame->data_len,
 						      1, signal,
 						      frame->freq);
 
-			} else if (memcmp(dest, station->addr, ETH_ALEN) == 0) {
+			} else if (memcmp(dest, receiver->addr, ETH_ALEN) == 0) {
 				if (set_interference_duration(ctx,
 					frame->sender->index, frame->duration,
 					frame->signal))
 					continue;
 
-				send_cloned_frame_msg(ctx, station,
+				send_cloned_frame_msg(ctx, receiver,
 						      frame->data,
 						      frame->data_len,
 						      1, frame->signal,
