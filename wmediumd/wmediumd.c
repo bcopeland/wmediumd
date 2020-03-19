@@ -499,11 +499,28 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 	if (frame->flags & HWSIM_TX_STAT_ACK) {
 		/* rx the frame on the dest interface */
 		list_for_each_entry(receiver, &ctx->stations, list) {
+			int snr = 0, signal;
+
 			if (memcmp(src, receiver->addr, ETH_ALEN) == 0)
 				continue;
 
+			if (memcmp(dest, receiver->addr, ETH_ALEN) == 0) {
+				signal = frame->signal;
+			} else if (is_multicast_ether_addr(dest)) {
+				snr = ctx->get_link_snr(ctx, frame->sender,
+							receiver);
+				snr += ctx->get_fading_signal(ctx);
+				signal = snr + NOISE_LEVEL;
+			} else
+				continue;
+
+			if (set_interference_duration(ctx,
+				frame->sender->index, frame->duration,
+				signal))
+				continue;
+
 			if (is_multicast_ether_addr(dest)) {
-				int snr, rate_idx, signal;
+				int rate_idx;
 				double error_prob;
 
 				/*
@@ -511,16 +528,6 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 				 * reverse link from sender -- check for
 				 * each receiver.
 				 */
-				snr = ctx->get_link_snr(ctx, frame->sender,
-							receiver);
-				snr += ctx->get_fading_signal(ctx);
-				signal = snr + NOISE_LEVEL;
-
-				if (set_interference_duration(ctx,
-					frame->sender->index, frame->duration,
-					signal))
-					continue;
-
 				if (signal < CCA_THRESHOLD)
 					continue;
 
@@ -538,25 +545,11 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 						   MAC_ARGS(src), MAC_ARGS(receiver->addr));
 					continue;
 				}
-
-				send_cloned_frame_msg(ctx, receiver,
-						      frame->data,
-						      frame->data_len,
-						      1, signal,
-						      frame->freq);
-
-			} else if (memcmp(dest, receiver->addr, ETH_ALEN) == 0) {
-				if (set_interference_duration(ctx,
-					frame->sender->index, frame->duration,
-					frame->signal))
-					continue;
-
-				send_cloned_frame_msg(ctx, receiver,
-						      frame->data,
-						      frame->data_len,
-						      1, frame->signal,
-						      frame->freq);
 			}
+
+			send_cloned_frame_msg(ctx, receiver, frame->data,
+					      frame->data_len, 1, signal,
+					      frame->freq);
 		}
 	} else
 		set_interference_duration(ctx, frame->sender->index,
