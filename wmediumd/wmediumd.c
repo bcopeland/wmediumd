@@ -515,12 +515,13 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 							receiver);
 				snr += ctx->get_fading_signal(ctx);
 				signal = snr + NOISE_LEVEL;
-				if (signal < CCA_THRESHOLD)
-					continue;
 
 				if (set_interference_duration(ctx,
 					frame->sender->index, frame->duration,
 					signal))
+					continue;
+
+				if (signal < CCA_THRESHOLD)
 					continue;
 
 				snr -= get_signal_offset_by_interference(ctx,
