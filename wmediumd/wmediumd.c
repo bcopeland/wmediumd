@@ -507,6 +507,8 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 			} else if (is_multicast_ether_addr(dest)) {
 				snr = ctx->get_link_snr(ctx, frame->sender,
 							receiver);
+				snr -= get_signal_offset_by_interference(ctx,
+					frame->sender->index, receiver->index);
 				snr += ctx->get_fading_signal(ctx);
 				signal = snr + NOISE_LEVEL;
 			} else
@@ -527,8 +529,6 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 				 * reverse link from sender -- check for
 				 * each receiver.
 				 */
-				snr -= get_signal_offset_by_interference(ctx,
-					frame->sender->index, receiver->index);
 				rate_idx = frame->tx_rates[0].idx;
 				error_prob = ctx->get_error_prob(ctx,
 					(double)snr, rate_idx, frame->freq,
