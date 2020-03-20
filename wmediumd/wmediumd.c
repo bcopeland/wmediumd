@@ -176,24 +176,6 @@ static double milliwatt_to_dBm(double value)
 	return 10.0 * log10(value);
 }
 
-static void set_interference_duration(struct wmediumd *ctx, int src_idx,
-				      int duration, int signal)
-{
-	int i;
-
-	if (!ctx->intf)
-		return;
-
-	if (signal >= CCA_THRESHOLD)
-		return;
-
-	for (i = 0; i < ctx->num_stas; i++) {
-		ctx->intf[ctx->num_stas * src_idx + i].duration += duration;
-		// use only latest value
-		ctx->intf[ctx->num_stas * src_idx + i].signal = signal;
-	}
-}
-
 static int get_signal_offset_by_interference(struct wmediumd *ctx, int src_idx,
 					     int dst_idx)
 {
@@ -494,62 +476,75 @@ void wmediumd_deliver_frame(struct usfstl_job *job)
 
 	list_del(&frame->list);
 
-	if (frame->flags & HWSIM_TX_STAT_ACK) {
-		/* rx the frame on the dest interface */
-		list_for_each_entry(receiver, &ctx->stations, list) {
-			int snr = 0, signal;
+	/* rx the frame on the dest interface */
+	list_for_each_entry(receiver, &ctx->stations, list) {
+		int snr = 0, signal;
 
-			if (memcmp(src, receiver->addr, ETH_ALEN) == 0)
-				continue;
+		if (memcmp(src, receiver->addr, ETH_ALEN) == 0)
+			continue;
 
-			if (memcmp(dest, receiver->addr, ETH_ALEN) == 0) {
-				signal = frame->signal;
-			} else if (is_multicast_ether_addr(dest)) {
-				snr = ctx->get_link_snr(ctx, frame->sender,
-							receiver);
-				snr -= get_signal_offset_by_interference(ctx,
-					frame->sender->index, receiver->index);
-				snr += ctx->get_fading_signal(ctx);
-				signal = snr + NOISE_LEVEL;
-			} else
-				continue;
-
-			set_interference_duration(ctx, frame->sender->index,
-						  frame->duration, signal);
-
-			if (signal < CCA_THRESHOLD)
-				continue;
-
-			if (is_multicast_ether_addr(dest)) {
-				int rate_idx;
-				double error_prob;
-
-				/*
-				 * we may or may not receive this based on
-				 * reverse link from sender -- check for
-				 * each receiver.
-				 */
-				rate_idx = frame->tx_rates[0].idx;
-				error_prob = ctx->get_error_prob(ctx,
-					(double)snr, rate_idx, frame->freq,
-					frame->data_len, frame->sender,
-					receiver);
-
-				if (drand48() <= error_prob) {
-					w_logf(ctx, LOG_INFO, "Dropped mcast from "
-						   MAC_FMT " to " MAC_FMT " at receiver\n",
-						   MAC_ARGS(src), MAC_ARGS(receiver->addr));
-					continue;
-				}
-			}
-
-			send_cloned_frame_msg(ctx, receiver, frame->data,
-					      frame->data_len, 1, signal,
-					      frame->freq);
+		if (memcmp(dest, receiver->addr, ETH_ALEN) == 0) {
+			signal = frame->signal;
+		} else {
+			snr = ctx->get_link_snr(ctx, frame->sender, receiver);
+			snr -= get_signal_offset_by_interference(ctx,
+				frame->sender->index, receiver->index);
+			snr += ctx->get_fading_signal(ctx);
+			signal = snr + NOISE_LEVEL;
 		}
-	} else
-		set_interference_duration(ctx, frame->sender->index,
-					  frame->duration, frame->signal);
+
+		if (signal < CCA_THRESHOLD) {
+			if (!ctx->intf)
+				continue;
+
+			int __index = ctx->num_stas * frame->sender->index +
+				receiver->index;
+
+			/*
+			 * The interference model assumes signals which strength
+			 * is under CCA threshold are interference signal.
+			 * The model accumulates the durations of such signals.
+			 * The model assumes (accumulated duration / time slot)
+			 * is probability of occurence of interference.
+			 * When interference occurs, the model reduces the
+			 * signal strength from Tx signal strength.
+			 */
+			ctx->intf[__index].duration += frame->duration;
+			// use only max value
+			if (ctx->intf[__index].signal < signal)
+				ctx->intf[__index].signal = signal;
+			continue;
+		}
+
+		if (!(frame->flags & HWSIM_TX_STAT_ACK))
+			continue;
+
+		if (is_multicast_ether_addr(dest)) {
+			int rate_idx;
+			double error_prob;
+
+			/*
+			 * we may or may not receive this based on
+			 * reverse link from sender -- check for
+			 * each receiver.
+			 */
+			rate_idx = frame->tx_rates[0].idx;
+			error_prob = ctx->get_error_prob(ctx, (double)snr,
+				rate_idx, frame->freq, frame->data_len,
+				frame->sender, receiver);
+
+			if (drand48() <= error_prob) {
+				w_logf(ctx, LOG_INFO, "Dropped mcast from "
+				       MAC_FMT " to " MAC_FMT " at receiver\n",
+				       MAC_ARGS(src), MAC_ARGS(receiver->addr));
+				continue;
+			}
+		} else if (memcmp(dest, receiver->addr, ETH_ALEN) != 0)
+			continue;
+
+		send_cloned_frame_msg(ctx, receiver, frame->data,
+				      frame->data_len, 1, signal, frame->freq);
+	}
 
 	send_tx_info_frame_nl(ctx, frame);
 
@@ -570,6 +565,7 @@ void wmediumd_intf_update(struct usfstl_job *job)
 				ctx->intf[i * ctx->num_stas + j].duration /
 				(double)10000;
 			ctx->intf[i * ctx->num_stas + j].duration = 0;
+			ctx->intf[i * ctx->num_stas + j].signal = -200;
 		}
 
 	job->start += 10000;
